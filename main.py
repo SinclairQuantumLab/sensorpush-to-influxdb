@@ -40,7 +40,7 @@ import influxdb_client
 from influxdb_client.client.write_api import SYNCHRONOUS
 # Connection Settings
 INFLUXDB_URL = "http://synology-nas:8086"
-INFLUXDB_TOKEN = "YOUR_INFLUXDB_TOKEN"  # sinclairgroup_influxdb's admin token
+INFLUXDB_TOKEN = "xixuoRzjm51D2WQh5uHnqjd0H28NJuaKpiHAmmSzEUlqgUhxRl0A01Na6-a_gX6BENlP3xx8FEoGP-qMx0Xrow=="  # sinclairgroup_influxdb's admin token
 INFLUXDB_ORG = "sinclairgroup"     # The Organization name you set during initial setup
 INFLUXDB_BUCKET = "imaq"    # main bucket for IMAQ lab
 # Initialize the InfluxDB Client and the Write API
@@ -148,16 +148,18 @@ while True:
 
         # if there is no records to upload:
         if not influxdb_records:
-            log_info(msg_il + "No new SensorPush samples to upload.")
+            log(msg_il + "No new SensorPush samples to upload.")
+            time.sleep(INTERVAL)
+            il += 1
             continue
 
         # <<<<< querying samples and parsing them for InfluxDB <<<<<
 
         # Upload to InfluxDB
-        # INFLUXDB_WRITE_API.write(bucket=INFLUXDB_BUCKET, org=INFLUXDB_ORG, record=influxdb_records)
-        # log_info(f"Uploaded {len(influxdb_records)} influxdb_record(s).")
-        log_info(msg_il + f"Uploaded {len(influxdb_records)} influxdb_record(s).")
+        INFLUXDB_WRITE_API.write(bucket=INFLUXDB_BUCKET, org=INFLUXDB_ORG, record=influxdb_records)
         # log_warn("InfluxDB write is currently disabled for debugging.")
+        log(msg_il + f"Uploaded {len(influxdb_records)} influxdb_record(s).")
+        
 
         # Update the last uploaded observed timestamp for each sensor
         for sensor_id, observed in new_observed_by_sensor.items():

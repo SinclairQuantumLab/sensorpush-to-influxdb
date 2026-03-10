@@ -11,8 +11,10 @@ def print(*args, **kwargs):
 def print_stderr(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
-def _format_log_message(level, message):
-    prefix = f"[{_timestamp()}] [{level}] "
+def _format_log_message(message, level=None):
+    prefix = f"[{_timestamp()}] "
+    if level is not None:
+        prefix += f"[{level}] "
     indent = " " * len(prefix)
 
     message = str(message)
@@ -21,11 +23,11 @@ def _format_log_message(level, message):
 
     return prefix + message
 
-def log_info(message, **kwargs):
-    print(_format_log_message("INFO", message), **kwargs)
+def log(message, **kwargs):
+    print(_format_log_message(message), **kwargs)
 
 def log_warn(message, **kwargs):
-    print_stderr(_format_log_message("WARN", message), **kwargs)
+    print_stderr(_format_log_message(message, "WARN"), **kwargs)
 
 def log_error(message, **kwargs):
-    print_stderr(_format_log_message("ERROR", message), **kwargs)
+    print_stderr(_format_log_message(message, "ERROR"), **kwargs)
