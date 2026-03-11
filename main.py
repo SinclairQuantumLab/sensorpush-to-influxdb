@@ -79,6 +79,8 @@ while True:
         # log_info("Polling SensorPush for latest samples...")
 
         try:
+            # Fetch sensor list and sample data on every iteration
+            sensors_info = client.get_sensors() 
             samples_data = client.get_samples(limit=1) # limit= # of last samples to retrieve, default is 1
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.HTTPError) as ex:
             log_error(msg_il)
@@ -86,7 +88,9 @@ while True:
             log_warn("Re-establishing SensorPush connection and retrying once...")
             client.authenticate()
             log_warn("SensorPush re-authentication succeeded.")
-            samples_data = client.get_samples(limit=1) # retry once after re-authentication
+            # Retry fetching after re-authentication
+            sensors_info = client.get_sensors() 
+            samples_data = client.get_samples(limit=1) #
             log_warn("Retry succeeded.")
             
         sensors_block = samples_data.get("sensors", {})
@@ -97,6 +101,13 @@ while True:
         for sensor_id, sample_list in sensors_block.items():
             if not isinstance(sample_list, list):
                 continue
+            
+            # Retrieve the sensor name from the freshly queried sensors_info
+            # it will raise KeyError if the sensor_id is not found from the queried sensor list
+            try:
+                sensor_name = sensors_info[sensor_id].get("name", "<unnamed>")
+            except KeyError as ex:
+                raise KeyError(f"Sensor ID {sensor_id} not found in queried sensor list.") from ex
 
             for sample in sample_list:
                 observed = sample["observed"]
@@ -109,6 +120,7 @@ while True:
                     "measurement": "SensorPush",
                     "tags": {
                         "sensor_id": sensor_id,
+                        "sensor_name": sensor_name,
                         "gateway": str(sample.get("gateways", "")),
                     },
                     "fields": {},
