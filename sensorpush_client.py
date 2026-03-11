@@ -5,6 +5,7 @@ Supports authentication, sensor list retrieval, and sample queries.
 This file can also be run directly for a quick connection test.
 """
 
+from typing import Any
 import requests
 
 BASE_URL = "https://api.sensorpush.com/api/v1"
@@ -12,19 +13,20 @@ BASE_URL = "https://api.sensorpush.com/api/v1"
 
 class SensorPushClient:
     """Minimal client for SensorPush Cloud API."""
-    def __init__(self, email, password):
-        self.email = email
-        self.password = password
-        self.access_token = None
 
-    def authenticate(self):
+    def __init__(self, email: str, password: str) -> None:
+        self.email: str = email
+        self.password: str = password
+        self.access_token: str | None = None
+
+    def authenticate(self) -> None:
         auth_res = requests.post(
             f"{BASE_URL}/oauth/authorize",
             json={"email": self.email, "password": self.password},
             timeout=10,
         )
         auth_res.raise_for_status()
-        authorization_token = auth_res.json()["authorization"]
+        authorization_token: str = auth_res.json()["authorization"]
 
         access_res = requests.post(
             f"{BASE_URL}/oauth/accesstoken",
@@ -34,7 +36,7 @@ class SensorPushClient:
         access_res.raise_for_status()
         self.access_token = access_res.json()["accesstoken"]
 
-    def _headers(self):
+    def _headers(self) -> dict[str, str]:
         if not self.access_token:
             raise RuntimeError("Not authenticated. Call authenticate() first.")
         return {
@@ -43,7 +45,7 @@ class SensorPushClient:
             "Content-Type": "application/json",
         }
 
-    def get_sensors(self):
+    def get_sensors(self) -> dict[str, Any]:
         res = requests.post(
             f"{BASE_URL}/devices/sensors",
             headers=self._headers(),
@@ -53,8 +55,14 @@ class SensorPushClient:
         res.raise_for_status()
         return res.json()
 
-    def get_samples(self, limit=1, sensors=None, start_time=None, stop_time=None):
-        payload = {"limit": limit}
+    def get_samples(
+        self,
+        limit: int = 1,
+        sensors: list[str] | None = None,
+        start_time: str | None = None,
+        stop_time: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"limit": limit}
         if sensors is not None:
             payload["sensors"] = sensors
         if start_time is not None:
@@ -70,12 +78,12 @@ class SensorPushClient:
         )
         res.raise_for_status()
         return res.json()
-    
+
 
 if __name__ == "__main__":
     import json
     from getpass import getpass
-    
+
     print("-" * 60)
     print("SensorPush connection test")
 
