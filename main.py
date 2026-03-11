@@ -29,9 +29,9 @@ print()
 # << SensorPush API connection <<<
 
 # >>> loop configuration >>>
-INTERVAL = 10
+INTERVAL_s = 10
 EX_THRESHOLD = 3
-print(f"Polling interval = {INTERVAL} s, exception threshold = {EX_THRESHOLD}.")
+print(f"Polling interval = {INTERVAL_s} s, exception threshold = {EX_THRESHOLD}.")
 print()
 # <<< loop configuration <<<
 
@@ -161,7 +161,7 @@ while True:
         # if there is no records to upload:
         if not influxdb_records:
             log(msg_il + "No new SensorPush samples to upload.")
-            time.sleep(INTERVAL)
+            time.sleep(INTERVAL_s)
             il += 1
             continue
 
@@ -186,5 +186,5 @@ while True:
             raise
 
     # log_info(f"Sleeping for {INTERVAL} s.")
-    time.sleep(INTERVAL)
+    time.sleep(INTERVAL_s)
     il += 1
