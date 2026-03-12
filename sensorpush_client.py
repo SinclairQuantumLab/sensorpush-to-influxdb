@@ -15,14 +15,18 @@ class SensorPushClient:
     """Minimal client for SensorPush Cloud API."""
 
     def __init__(self, email: str, password: str) -> None:
-        self.email: str = email
-        self.password: str = password
-        self.access_token: str | None = None
+        self._email: str = email
+        self._password: str = password
+        self._access_token: str | None = None
+
+    # read-only properties
+    @property
+    def email(self) -> str: """Sensor Push account email address"""; return self._email
 
     def authenticate(self) -> None:
         auth_res = requests.post(
             f"{BASE_URL}/oauth/authorize",
-            json={"email": self.email, "password": self.password},
+            json={"email": self._email, "password": self._password},
             timeout=10,
         )
         auth_res.raise_for_status()
@@ -34,14 +38,14 @@ class SensorPushClient:
             timeout=10,
         )
         access_res.raise_for_status()
-        self.access_token = access_res.json()["accesstoken"]
+        self._access_token = access_res.json()["accesstoken"]
 
     def _headers(self) -> dict[str, str]:
-        if not self.access_token:
+        if not self._access_token:
             raise RuntimeError("Not authenticated. Call authenticate() first.")
         return {
             "accept": "application/json",
-            "Authorization": self.access_token,
+            "Authorization": self._access_token,
             "Content-Type": "application/json",
         }
 
