@@ -50,18 +50,18 @@ class SensorPushClient:
         }
 
     def get_sensors(self) -> dict[str, Any]:
-        res = requests.post(
+        response_json = requests.post(
             f"{BASE_URL}/devices/sensors",
             headers=self._headers(),
             json={},
             timeout=10,
         )
-        res.raise_for_status()
-        return res.json()
+        response_json.raise_for_status()
+        return response_json.json()
 
     def get_samples(
         self,
-        limit: int | None = 1,
+        limit: int | None = None,
         sensors: list[str] | None = None,
         start_time: str | None = None,
         stop_time: str | None = None,
@@ -76,48 +76,64 @@ class SensorPushClient:
         if stop_time is not None:
             payload["stopTime"] = stop_time
 
-        res = requests.post(
+        response_json = requests.post(
             f"{BASE_URL}/samples",
             headers=self._headers(),
             json=payload,
             timeout=15,
         )
-        res.raise_for_status()
-        return res.json()
+        response_json.raise_for_status()
+        samples = response_json.json()
+
+        # print(f"[DEBUG] get_samples sensors={sensors} start_time={start_time}")
+        # print(f"[DEBUG] get_samples payload={payload}")
+        # print(f"[DEBUG] get_samples response={response_json}")
+
+        return samples
 
 
 if __name__ == "__main__":
     import json
     from getpass import getpass
+    from pprint import pprint
 
     print("-" * 60)
     print("SensorPush connection test")
-    email = input("SensorPush email: ").strip()
-    password = getpass("SensorPush password: ").strip()
+    email = input("SensorPush email (if blank, sinclairquantumlab@gmail.com by default): ").strip()
+    if email == "":
+        email = "sinclairquantumlab@gmail.com"
+    password = getpass("SensorPush password: (if blank, use default)").strip()
+    if password == "":
+        password = "rubidium87"
 
-    try:
-        client = SensorPushClient(email, password)
+    client = SensorPushClient(email, password)
 
-        print("\nStep 1: Authenticating...")
-        client.authenticate()
-        print(" [OK] Authentication succeeded.")
+    print("\nStep 1: Authenticating...")
+    client.authenticate()
+    print(" [OK] Authentication succeeded.")
 
-        print("\nStep 2: Fetching sensor list...")
-        sensors = client.get_sensors()
-        print(f" [OK] Found {len(sensors)} sensor(s).")
-        for sensor_id, info in sensors.items():
-            print(f" - Name: {info.get('name')}, ID: {sensor_id}")
+    input("Press Enter to continue...")
 
-        print("\nStep 3: Fetching latest sample...")
-        samples = client.get_samples(limit=1)
-        print(" [OK] Sample fetch succeeded.")
-        print(json.dumps(samples, indent=2))
+    print("\nStep 2: Fetching sensor list...")
+    sensors = client.get_sensors()
+    print(f" [OK] Found {len(sensors)} sensor(s).")
+    pprint(sensors)
+    print()
 
-        print("-" * 60)
-        print("RESULT: SensorPush connection test PASSED.")
+    input("Press Enter to continue...")
 
-    except requests.exceptions.HTTPError as e:
-        print(f" [FAIL] HTTP Error: {e.response.status_code}")
-        print(e.response.text)
-    except Exception as e:
-        print(f" [FAIL] {e}")
+    print("\nStep 3: Fetching latest sample...")
+    samples = client.get_samples(limit=1)
+    print(" [OK] Sample fetch succeeded.")
+    pprint(samples)
+    print()
+    
+    example_sensor_id = list(samples["sensors"].keys())[0]
+    example_sample = samples["sensors"][example_sensor_id]
+    example_record = example_sample[0]
+    example_time = example_record["observed"]
+    print(f"Example observed time in each record: {example_time} (type: {type(example_time)})")
+
+    print("-" * 60)
+    print("RESULT: SensorPush connection test PASSED.")
+

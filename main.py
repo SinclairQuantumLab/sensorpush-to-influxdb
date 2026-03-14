@@ -2,7 +2,7 @@
 Poll SensorPush sensors and upload new samples to InfluxDB.
 
 This script runs continuously, polls SensorPush at a fixed interval,
-skips already-seen samples using per-sensor observed timestamps, and
+asks InfluxDB for the latest uploaded sample time for each sensor, and
 raises after a configured number of total exceptions so supervisor can
 handle process-level recovery.
 """
@@ -10,8 +10,8 @@ handle process-level recovery.
 from supervisor_helper import *
 import requests
 from sensorpush_client import SensorPushClient
-import json
 import time
+from datetime import datetime, timezone
 
 print()
 print("----- SensorPush -> InfluxDB uploader -----")
@@ -26,10 +26,10 @@ client = SensorPushClient(SP_EMAIL, SP_PASSWORD)
 client.authenticate()
 print("Done.")
 print()
-# << SensorPush API connection <<<
+# <<< SensorPush API connection <<<
 
 # >>> loop configuration >>>
-INTERVAL_s = 10
+INTERVAL_s = 3*60
 EX_THRESHOLD = 3
 print(f"Polling interval = {INTERVAL_s} s, exception threshold = {EX_THRESHOLD}.")
 print()
@@ -46,141 +46,259 @@ INFLUXDB_BUCKET = "imaq"    # main bucket for IMAQ lab
 # Initialize the InfluxDB Client and the Write API
 INFLUXDB_CLIENT = influxdb_client.InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
 INFLUXDB_WRITE_API = INFLUXDB_CLIENT.write_api(write_options=SYNCHRONOUS)
+INFLUXDB_QUERY_API = INFLUXDB_CLIENT.query_api()
 print(f"InfluxDB client initialized for org='{INFLUXDB_ORG}', bucket='{INFLUXDB_BUCKET}'.")
 print()
 # <<< InfluxDB configuration <<<
 
 
-# >>> functions for unit conversion >>> 
-
+# >>> functions for unit conversion >>>
 def f_to_c(temp_f):
     return (temp_f - 32.0) * 5.0 / 9.0
 
 def inhg_to_hpa(pressure_inhg):
     return pressure_inhg * 33.8638866667
-
 # <<< functions for unit conversion <<<
 
+# >>> helper functions >>>
+do_debug = False
+def print_debug(*args, **kwargs):
+    if do_debug is False: return
+    print("[DEBUG] ", *args, **kwargs)
+
+def parse_utc_timestamp(ts: str) -> datetime:
+    return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+def get_last_relayed_sample_datetimes() -> dict[str, datetime]:
+    flux = f'''
+from(bucket: "{INFLUXDB_BUCKET}")
+  |> range(start: 0)
+  |> filter(fn: (r) => r["_measurement"] == "SensorPush")
+  |> group(columns: ["sensor_id"])
+  |> last(column: "_time")
+  |> keep(columns: ["_time", "sensor_id"])
+'''
+    last_relayed_sample_datetimes = {}
+    tables = INFLUXDB_QUERY_API.query(query=flux, org=INFLUXDB_ORG)
+    for table in tables:
+        for record in table.records:
+            sensor_id = record.values.get("sensor_id")
+            observed = record.get_time()
+            if sensor_id is None or observed is None:
+                continue
+            # last_relayed_sample_times[sensor_id] = observed.isoformat.replace("+00:00", "Z")
+            last_relayed_sample_datetimes[sensor_id] = observed
+
+    print_debug(f"last_relayed_sample_times count={len(last_relayed_sample_datetimes)}")
+    for sensor_id, observed in last_relayed_sample_datetimes.items():
+        print_debug(f"influx cursor sensor_id={sensor_id} observed={observed}")
+
+    return last_relayed_sample_datetimes
+
+def query_samples() -> tuple[dict[str, dict], list[dict]]:
+
+    # get the measured time of the last sample relayed to InfluxDB for each sensor
+    last_relayed_sample_datetimes = get_last_relayed_sample_datetimes()
+
+    # >>>>> query samples after the last one relayed to InfluxDB >>>>>
+
+    # query sensor lists
+    sensors = client.get_sensors()
+    sensor_ids = sensors.keys()
+
+    
+    # query samples from each sensor
+    samples_per_sensor = []
+    epoch_datetime = datetime(1970, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    print_debug(f"queried sensors_info count={len(sensors)}")
+    for sensor_id in sensor_ids: # iterate over sensors
+        last_relayed_sample_datetime = last_relayed_sample_datetimes.get(sensor_id, None) # None mean no prior samples relayed
+        print_debug(f"query_samples sensor_id={sensor_id}")
+        print_debug(f"query_samples start_time={repr(last_relayed_sample_datetime)}")
+
+        # set time after which sensorpush data is to be fetched
+        # fetch all the data (after Unix epoch) if there was no data relayed to influxdb for this sensor
+        query_start_datetime = last_relayed_sample_datetime if last_relayed_sample_datetime is not None else epoch_datetime
+        query_start_time_str= query_start_datetime.isoformat(timespec='milliseconds')
+
+        # fetch the sensorpush samples
+        samples = client.get_samples(
+            sensors=[sensor_id],
+            start_time=query_start_time_str,
+            limit=1000
+        )
+
+        # remove the samples previously relayed, if exists
+        # also drop the records with no specified measured time (shouldn't happen though)
+        records = samples["sensors"][sensor_id]
+        records_filtered = []
+        for record in records:
+            measured_time = record.get("observed", None)
+            if measured_time is None:
+                continue
+            measured_datetime = datetime.fromisoformat(measured_time)
+            if measured_datetime <= query_start_datetime:
+                continue
+            records_filtered += [record]
+        samples["sensors"][sensor_id] = records_filtered
+
+        # add to array of samples for this sensor
+        samples_per_sensor += [samples]
+
+        print_debug(f"query_samples returned_sample_count={len(records)}")
+        if records:
+            print_debug(f"query_samples first_observed={records[0].get('observed')}")
+            print_debug(f"query_samples last_observed={records[-1].get('observed')}")
+        else:
+            print_debug("query_samples returned no samples")
+
+    # <<<<< query samples after the last one relayed to InfluxDB <<<<<
+
+    return sensors, samples_per_sensor
+
+def upload_new_samples(
+        sensors: dict[str, dict], 
+        samples_per_sensor: list[dict]
+        ) -> int:
+
+    influxdb_records = []
+
+    print_debug(f"upload_new_samples sensor_count={len(samples_per_sensor)}")
+
+    # >>>>> prepare records to upload to InfluxDB >>>>>
+
+    for samples in samples_per_sensor: # iterate samples over different sensors
+        sensor_id, = samples["sensors"].keys()
+        records = samples["sensors"][sensor_id]
+
+        # Retrieve the sensor name from the freshly queried sensors
+        # it will raise KeyError if the sensor_id is not found from the queried sensor list
+        sensor_name = sensors[sensor_id].get("name", "")
+
+        for record in records:
+            measured_time = record["observed"]
+            influxdb_record = {
+                "measurement": "SensorPush",
+                "tags": {
+                    "sensor_id": sensor_id,
+                    "sensor_name": sensor_name,
+                    "gateway": str(record.get("gateways", "")),
+                },
+                "fields": {},
+                "time": measured_time,
+            }
+
+            temperature_f = record.get("temperature")
+            if temperature_f is not None:
+                influxdb_record["fields"]["Temperature[degC]"] = f_to_c(float(temperature_f))
+
+            humidity = record.get("humidity")
+            if humidity is not None:
+                influxdb_record["fields"]["Humidity[%]"] = float(humidity)
+
+            dewpoint_f = record.get("dewpoint")
+            if dewpoint_f is not None:
+                influxdb_record["fields"]["DewPoint[degC]"] = f_to_c(float(dewpoint_f))
+
+            barometric_pressure_inhg = record.get("barometric_pressure")
+            if barometric_pressure_inhg is not None:
+                influxdb_record["fields"]["BarometricPressure[hPa]"] = inhg_to_hpa(float(barometric_pressure_inhg))
+
+            vpd = record.get("vpd")
+            if vpd is not None:
+                influxdb_record["fields"]["VPD[kPa]"] = float(vpd)
+
+            altitude = record.get("altitude")
+            if altitude is not None:
+                influxdb_record["fields"]["Altitude[m]"] = float(altitude)
+
+            altimeter_pressure_inhg = record.get("altimeter_pressure")
+            if altimeter_pressure_inhg is not None:
+                influxdb_record["fields"]["AltimeterPressure[hPa]"] = inhg_to_hpa(float(altimeter_pressure_inhg))
+
+            influxdb_records += [influxdb_record]
+            print_debug(f"appended influxdb_record sensor_id={sensor_id} time={measured_time} field_count={len(influxdb_record['fields'])}")
+
+    print_debug(f"total influxdb_records prepared={len(influxdb_records)}")
+
+    # <<<<< prepare records to upload to InfluxDB <<<<<
+    
+    # >>>>> upload to InfluxDB >>>>>
+
+    if not influxdb_records:
+        print_debug("no records to write to InfluxDB")
+        return 0
+
+    for record in influxdb_records:
+        print_debug(f"write_record sensor_id={record['tags']['sensor_id']} time={record['time']} sensor_name={repr(record['tags']['sensor_name'])}")
+
+    # INFLUXDB_WRITE_API.write(bucket=INFLUXDB_BUCKET, org=INFLUXDB_ORG, record=influxdb_records)
+    print_debug(f"INFLUXDB_WRITE_API.write completed for {len(influxdb_records)} record(s)")
+    log_warn("InfluxDB write is currently disabled for debugging.")
+
+    # <<<<< upload to InfluxDB <<<<<
+
+    return len(influxdb_records)
+    
+    
+# <<< helper functions <<<
 
 # Main loop for querying SensorPush samples and uploading to InfluxDB
 ex_count = 0
-last_uploaded_observed_by_sensor = {}
 
 print("Entering main polling loop...")
 print()
 
-il = 0 # iteration loop counter
+il = 0  # iteration loop counter
 while True:
     try:
         # log_info(f"Iteration {il}:", end=" ")
         msg_il = f"Iteration {il}: "
 
-        # >>>>> querying samples and parsing them for InfluxDB >>>>>
+        # >>>>> querying samples >>>>>
         # log_info("Polling SensorPush for latest samples...")
-
         try:
-            # Fetch sensor list and sample data on every iteration
-            sensors_info = client.get_sensors() 
-            samples_data = client.get_samples(limit=1) # limit= # of last samples to retrieve, default is 1
+            print_debug(f"starting query_samples() for iteration {il}")
+
+            # fetch sensor list and sample data on every iteration
+            sensors, samples_per_sensor = query_samples()
+
+            print_debug(f"finished query_samples() for iteration {il}")
+
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.HTTPError) as ex:
+            # re-connect to SensorPush and retry once. Intended for expired session rather than usual exception handling purpose.
             log_error(msg_il)
             log_error(f"SensorPush query failed: {type(ex).__name__}: {ex}")
             log_warn("Re-establishing SensorPush connection and retrying once...")
             client.authenticate()
             log_warn("SensorPush re-authentication succeeded.")
-            # Retry fetching after re-authentication
-            sensors_info = client.get_sensors() 
-            samples_data = client.get_samples(limit=1) #
-            log_warn("Retry succeeded.")
-            
-        sensors_block = samples_data.get("sensors", {})
 
-        influxdb_records = []
-        new_observed_by_sensor = {}
+            print_debug(f"retrying query_samples() for iteration {il}")
 
-        for sensor_id, sample_list in sensors_block.items():
-            if not isinstance(sample_list, list):
-                continue
-            
-            # Retrieve the sensor name from the freshly queried sensors_info
-            # it will raise KeyError if the sensor_id is not found from the queried sensor list
-            try:
-                sensor_name = sensors_info[sensor_id].get("name", "<unnamed>")
-            except KeyError as ex:
-                raise KeyError(f"Sensor ID {sensor_id} not found in queried sensor list.") from ex
+            # retry fetching after re-authentication
+            sensors, samples_per_sensor = query_samples()
 
-            for sample in sample_list:
-                observed = sample["observed"]
-                last_uploaded_observed = last_uploaded_observed_by_sensor.get(sensor_id)
+            print_debug(f"retry query_samples() succeeded for iteration {il}")
+        # <<<<< querying samples <<<<<
 
-                if last_uploaded_observed is not None and observed <= last_uploaded_observed:
-                    continue
 
-                influxdb_record = {
-                    "measurement": "SensorPush",
-                    "tags": {
-                        "sensor_id": sensor_id,
-                        "sensor_name": sensor_name,
-                        "gateway": str(sample.get("gateways", "")),
-                    },
-                    "fields": {},
-                    "time": observed,
-                }
+        # >>>>> uploading samples to InfluxDB >>>>>
 
-                temperature_f = sample.get("temperature")
-                if temperature_f is not None:
-                    influxdb_record["fields"]["Temperature[degC]"] = f_to_c(float(temperature_f))
-
-                humidity = sample.get("humidity")
-                if humidity is not None:
-                    influxdb_record["fields"]["Humidity[%]"] = float(humidity)
-
-                dewpoint_f = sample.get("dewpoint")
-                if dewpoint_f is not None:
-                    influxdb_record["fields"]["DewPoint[degC]"] = f_to_c(float(dewpoint_f))
-
-                barometric_pressure_inhg = sample.get("barometric_pressure")
-                if barometric_pressure_inhg is not None:
-                    influxdb_record["fields"]["BarometricPressure[hPa]"] = inhg_to_hpa(float(barometric_pressure_inhg))
-
-                vpd = sample.get("vpd")
-                if vpd is not None:
-                    influxdb_record["fields"]["VPD[kPa]"] = float(vpd)
-
-                altitude = sample.get("altitude")
-                if altitude is not None:
-                    influxdb_record["fields"]["Altitude[m]"] = float(altitude)
-
-                altimeter_pressure_inhg = sample.get("altimeter_pressure")
-                if altimeter_pressure_inhg is not None:
-                    influxdb_record["fields"]["AltimeterPressure[hPa]"] = inhg_to_hpa(float(altimeter_pressure_inhg))
-
-                influxdb_records.append(influxdb_record)
-                new_observed_by_sensor[sensor_id] = observed
+        uploaded_count = upload_new_samples(sensors, samples_per_sensor)
 
         # if there is no records to upload:
-        if not influxdb_records:
+        if uploaded_count == 0:
             log(msg_il + "No new SensorPush samples to upload.")
-            time.sleep(INTERVAL_s)
-            il += 1
-            continue
+        else:
+            log(msg_il + f"Uploaded {uploaded_count} influxdb_record(s).")
 
-        # <<<<< querying samples and parsing them for InfluxDB <<<<<
-
-        # Upload to InfluxDB
-        INFLUXDB_WRITE_API.write(bucket=INFLUXDB_BUCKET, org=INFLUXDB_ORG, record=influxdb_records)
-        # log_warn("InfluxDB write is currently disabled for debugging.")
-        log(msg_il + f"Uploaded {len(influxdb_records)} influxdb_record(s).")
-        
-
-        # Update the last uploaded observed timestamp for each sensor
-        for sensor_id, observed in new_observed_by_sensor.items():
-            last_uploaded_observed_by_sensor[sensor_id] = observed
+        # <<<<< uploading samples to InfluxDB <<<<<
 
     except Exception as ex:
         log_error(msg_il)
         ex_count += 1
         log_error(f"Error during measurement/upload ({ex_count}/{EX_THRESHOLD}): {type(ex).__name__}: {ex}")
+        raise # for debug
         if ex_count >= EX_THRESHOLD:
             log_error("Exception threshold reached. Raising to supervisor.")
             raise
