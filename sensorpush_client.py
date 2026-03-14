@@ -61,12 +61,14 @@ class SensorPushClient:
 
     def get_samples(
         self,
-        limit: int = 1,
+        limit: int | None = 1,
         sensors: list[str] | None = None,
         start_time: str | None = None,
         stop_time: str | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"limit": limit}
+        payload: dict[str, Any] = {}
+        if limit is not None:
+            payload["limit"] = limit
         if sensors is not None:
             payload["sensors"] = sensors
         if start_time is not None:
@@ -90,7 +92,6 @@ if __name__ == "__main__":
 
     print("-" * 60)
     print("SensorPush connection test")
-
     email = input("SensorPush email: ").strip()
     password = getpass("SensorPush password: ").strip()
 
@@ -99,26 +100,24 @@ if __name__ == "__main__":
 
         print("\nStep 1: Authenticating...")
         client.authenticate()
-        print("   [OK] Authentication succeeded.")
+        print(" [OK] Authentication succeeded.")
 
         print("\nStep 2: Fetching sensor list...")
         sensors = client.get_sensors()
-        print(f"   [OK] Found {len(sensors)} sensor(s).")
-
+        print(f" [OK] Found {len(sensors)} sensor(s).")
         for sensor_id, info in sensors.items():
-            print(f"      - Name: {info.get('name')}, ID: {sensor_id}")
+            print(f" - Name: {info.get('name')}, ID: {sensor_id}")
 
         print("\nStep 3: Fetching latest sample...")
         samples = client.get_samples(limit=1)
-        print("   [OK] Sample fetch succeeded.")
+        print(" [OK] Sample fetch succeeded.")
         print(json.dumps(samples, indent=2))
 
         print("-" * 60)
         print("RESULT: SensorPush connection test PASSED.")
 
     except requests.exceptions.HTTPError as e:
-        print(f"   [FAIL] HTTP Error: {e.response.status_code}")
+        print(f" [FAIL] HTTP Error: {e.response.status_code}")
         print(e.response.text)
-
     except Exception as e:
-        print(f"   [FAIL] {e}")
+        print(f" [FAIL] {e}")
