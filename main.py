@@ -29,11 +29,16 @@ print()
 # <<< SensorPush API connection <<<
 
 # >>> loop configuration >>>
-INTERVAL_s = 3*60
+INTERVAL_s = 60
 EX_THRESHOLD = 3
 print(f"Polling interval = {INTERVAL_s} s, exception threshold = {EX_THRESHOLD}.")
 print()
 # <<< loop configuration <<<
+
+# check the input value
+# 1 query per minute is the maximum allowed for SensorPush API
+# https://www.sensorpush.com/gateway-cloud-api
+if INTERVAL_s < 60: raise ValueError("The loop interval (INTERVAL_s) should be at least 60 s.")
 
 # >>> InfluxDB configuration >>>
 import influxdb_client
@@ -95,82 +100,63 @@ from(bucket: "{INFLUXDB_BUCKET}")
 
     return last_relayed_sample_datetimes
 
-def query_samples() -> tuple[dict[str, dict], list[dict]]:
+def query_sensorpush() -> tuple[dict[str, any], dict[str, any]]:
 
     # get the measured time of the last sample relayed to InfluxDB for each sensor
     last_relayed_sample_datetimes = get_last_relayed_sample_datetimes()
 
+    # get sensor information here because the querying sample data below takes a while and the sensor info might change meanwhile
+    sensors = client.get_sensors()
+
     # >>>>> query samples after the last one relayed to InfluxDB >>>>>
 
-    # query sensor lists
-    sensors = client.get_sensors()
-    sensor_ids = sensors.keys()
+    # set sensorpush query start time to be the earliest last measured time across the sensors (except the new sensors)
+    observed_existing = [observed for sensor_id, observed in last_relayed_sample_datetimes.items() if observed is not None]
+    # set Unix epoch to query_start_datetime if no sensorpush data exists in InfluxDB
+    datetime_epoch = datetime(1970, 1, 1, tzinfo=timezone.utc) 
+    query_start_datetime = min(observed_existing) if observed_existing else datetime_epoch
+    query_start_time_str= query_start_datetime.isoformat(timespec='milliseconds')
 
+    # query samples from sensorpush
+    samples = client.get_samples(
+                start_time=query_start_time_str,
+                limit=1000
+            )
     
-    # query samples from each sensor
-    samples_per_sensor = []
-    epoch_datetime = datetime(1970, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-    print_debug(f"queried sensors_info count={len(sensors)}")
-    for sensor_id in sensor_ids: # iterate over sensors
-        last_relayed_sample_datetime = last_relayed_sample_datetimes.get(sensor_id, None) # None mean no prior samples relayed
-        print_debug(f"query_samples sensor_id={sensor_id}")
-        print_debug(f"query_samples start_time={repr(last_relayed_sample_datetime)}")
+    # remove the samples previously relayed
+    # also drop the records with no specified measured time (shouldn't happen though)
+    for sensor_id, records in samples["sensors"].items():
+        last_relayed_sample_datetime = last_relayed_sample_datetimes.get(sensor_id, None)
+        if last_relayed_sample_datetime is None:
+            continue
 
-        # set time after which sensorpush data is to be fetched
-        # fetch all the data (after Unix epoch) if there was no data relayed to influxdb for this sensor
-        query_start_datetime = last_relayed_sample_datetime if last_relayed_sample_datetime is not None else epoch_datetime
-        query_start_time_str= query_start_datetime.isoformat(timespec='milliseconds')
-
-        # fetch the sensorpush samples
-        samples = client.get_samples(
-            sensors=[sensor_id],
-            start_time=query_start_time_str,
-            limit=1000
-        )
-
-        # remove the samples previously relayed, if exists
-        # also drop the records with no specified measured time (shouldn't happen though)
-        records = samples["sensors"][sensor_id]
         records_filtered = []
         for record in records:
-            measured_time = record.get("observed", None)
-            if measured_time is None:
+            measured_time_str = record.get("observed", None)
+            if measured_time_str is None:
                 continue
-            measured_datetime = datetime.fromisoformat(measured_time)
-            if measured_datetime <= query_start_datetime:
+            measured_datetime = datetime.fromisoformat(measured_time_str)
+            if measured_datetime <= last_relayed_sample_datetime:
                 continue
             records_filtered += [record]
         samples["sensors"][sensor_id] = records_filtered
 
-        # add to array of samples for this sensor
-        samples_per_sensor += [samples]
-
-        print_debug(f"query_samples returned_sample_count={len(records)}")
-        if records:
-            print_debug(f"query_samples first_observed={records[0].get('observed')}")
-            print_debug(f"query_samples last_observed={records[-1].get('observed')}")
-        else:
-            print_debug("query_samples returned no samples")
-
     # <<<<< query samples after the last one relayed to InfluxDB <<<<<
 
-    return sensors, samples_per_sensor
+    return sensors, samples
 
 def upload_new_samples(
-        sensors: dict[str, dict], 
-        samples_per_sensor: list[dict]
-        ) -> int:
+    sensors: dict[str, any],
+    samples: dict[str, any],
+) -> int:
 
     influxdb_records = []
 
-    print_debug(f"upload_new_samples sensor_count={len(samples_per_sensor)}")
+    print_debug(f"upload_new_samples sensor_count={len(samples['sensors'])}")
 
     # >>>>> prepare records to upload to InfluxDB >>>>>
 
-    for samples in samples_per_sensor: # iterate samples over different sensors
-        sensor_id, = samples["sensors"].keys()
-        records = samples["sensors"][sensor_id]
-
+    for sensor_id, records in samples["sensors"].items(): # iterate record over different sensors
         # Retrieve the sensor name from the freshly queried sensors
         # it will raise KeyError if the sensor_id is not found from the queried sensor list
         sensor_name = sensors[sensor_id].get("name", "")
@@ -261,7 +247,7 @@ while True:
             print_debug(f"starting query_samples() for iteration {il}")
 
             # fetch sensor list and sample data on every iteration
-            sensors, samples_per_sensor = query_samples()
+            sensors, samples_per_sensor = query_sensorpush()
 
             print_debug(f"finished query_samples() for iteration {il}")
 
@@ -276,7 +262,7 @@ while True:
             print_debug(f"retrying query_samples() for iteration {il}")
 
             # retry fetching after re-authentication
-            sensors, samples_per_sensor = query_samples()
+            sensors, samples_per_sensor = query_sensorpush()
 
             print_debug(f"retry query_samples() succeeded for iteration {il}")
         # <<<<< querying samples <<<<<
@@ -298,7 +284,7 @@ while True:
         log_error(msg_il)
         ex_count += 1
         log_error(f"Error during measurement/upload ({ex_count}/{EX_THRESHOLD}): {type(ex).__name__}: {ex}")
-        raise # for debug
+        # raise # for debug
         if ex_count >= EX_THRESHOLD:
             log_error("Exception threshold reached. Raising to supervisor.")
             raise
