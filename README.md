@@ -1,46 +1,53 @@
 # SensorPush-to-InfluxDB Relay
 
-A small Python script that polls SensorPush sensors and uploads new samples to InfluxDB.
+A small Python app that relays SensorPush Cloud samples to InfluxDB.
 
 It is designed to:
 
-- poll more frequently than the SensorPush measurement interval
-- skip duplicate samples using each sensor's `observed` timestamp
+- poll SensorPush at a fixed interval
+- avoid re-relaying samples already stored in InfluxDB
+- store SensorPush measurements in InfluxDB with a simple, consistent schema
 - run under `supervisor` with stdout/stderr-friendly logging
+- support backfilling a specified time range with a separate script
 
 ## Requirements
 
-- Developed with Python-3.14
-- A SensorPush account
-- An InfluxDB server url and token
+- Python 3.14
+- A SensorPush Cloud account
+- A SensorPush Gateway configured for cloud access
+- An InfluxDB server URL, organization, bucket, and token
+- The local helper modules used by this repo:
+  - `sensorpush_client.py`
+  - `supervisor_helper.py`
 
-## How to use
+## Installation & setup
 
-### First-time setup
+1. `git clone` this repo and run `uv sync`.
+2. `git clone` `imaq-config` repo in this repo's `imaq-config` folder.
+3. (Optional) To manage the main app with `supervisor`, set `sensorpush-to-influxdb.conf` `supervisor` configuration file accordingly and move it to teh `supervisor`'s `conf.d` folder.
 
-1. Open `main.py` and set your SensorPush and InfluxDB configuration values.
-2. Install all the packages main.py and imported scripts require.
+## How to run
 
-### How to run
+### Main app
 
-#### Main app
-
-In terminal `cd` to the app's folder and run the `main.py`. Some examples:
+With `uv`:
 
 ```bash
 uv run main.py
 ```
 
-or, without `uv`,
+or with a virtual environment:
 
 ```bash
-activate .venv/bin/activate
+source .venv/bin/activate
 python main.py
 ```
 
-#### Batch relay
+### Batch relay by specified time range
 
-Use `relay_by_range.py` if data within a specifit range of time needs to be (re-)relayed (e.g., for SensorPush samples saved in the sensor that are not relayed to InfluxDB due to power outtages or network error). Specify the range as below:
+Use `relay_by_range.py` if data within a specifit range of time needs to be (re-)relayed (e.g., for SensorPush samples saved in the sensor that are not relayed to InfluxDB due to power outtages or network error).
+
+Set the time range in `relay_by_range.py` like this:
 
 ```python
 # >>> app config >>>
@@ -48,16 +55,14 @@ START_TIME = "2026-03-13T15:00:00.000Z"
 STOP_TIME = "2026-03-13T20:10:00.000Z"
 ```
 
-> **NOTE:** make sure to consider time zone
-
-## Notes
-
-- The script polls SensorPush continuously at the configured interval.
-- It only prepares/uploads samples whose `observed` timestamp is newer than the last seen value for that sensor.
-- If too many exceptions occur, the script raises and lets `supervisor` handle restart/recovery.
-- Detailed implementation notes are kept in the code comments.
-
 ## Developer's Notes
 
-- Sensor Push Gateway Cloud API: https://www.sensorpush.com/gateway-cloud-api?srsltid=AfmBOopm_qc8vBGBzhOWyyigeyQWjgD0QLlwBF4gnVuUD-_SpZXuGT-M
-- Try `pysensorpush` package next time: https://github.com/homeassistant-projects/pysensorpush
+- [Sensor Push Gateway Cloud API](https://www.sensorpush.com/gateway-cloud-api?srsltid=AfmBOopm_qc8vBGBzhOWyyigeyQWjgD0QLlwBF4gnVuUD-_SpZXuGT-M)
+
+- It only prepares/uploads samples whose `observed` timestamp is newer than the earilest last seen value across the sensors.
+
+- If too many exceptions occur, the script raises and lets `supervisor` handle restart/recovery.
+
+- Detailed implementation notes are kept in the code comments.
+
+- It might be worth taking a look into [`pysensorpush`](https://github.com/homeassistant-projects/pysensorpush) package.
