@@ -23,16 +23,32 @@ It is designed to:
 
 ### How to run
 
+#### Main app
+
 In terminal `cd` to the app's folder and run the `main.py`. Some examples:
 
 ```bash
 uv run main.py
 ```
 
+or, without `uv`,
+
 ```bash
 activate .venv/bin/activate
 python main.py
 ```
+
+#### Batch relay
+
+Use `relay_by_range.py` if data within a specifit range of time needs to be (re-)relayed (e.g., for SensorPush samples saved in the sensor that are not relayed to InfluxDB due to power outtages or network error). Specify the range as below:
+
+```python
+# >>> app config >>>
+START_TIME = "2026-03-13T15:00:00.000Z"
+STOP_TIME = "2026-03-13T20:10:00.000Z"
+```
+
+> **NOTE:** make sure to consider time zone
 
 ## Notes
 
