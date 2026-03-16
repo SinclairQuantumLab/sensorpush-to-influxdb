@@ -17,41 +17,41 @@ print()
 print("----- SensorPush -> InfluxDB uploader -----")
 print()
 
-# >>> SensorPush API connection >>>
-SP_EMAIL = "sinclairquantumlab@gmail.com"
-SP_PASSWORD = "rubidium87"
+# >>> app config >>>
+INTERVAL_s = 60
+EX_THRESHOLD = 3
+print(f"Polling interval = {INTERVAL_s} s, exception threshold = {EX_THRESHOLD}.")
+print()
+# <<< app config <<<
 
+# >>> check input values >>>
+# 1 query per minute is the maximum allowed for SensorPush API
+# https://www.sensorpush.com/gateway-cloud-api
+if INTERVAL_s < 60: raise ValueError("The loop interval (INTERVAL_s) should be at least 60 s.")
+# <<< check the input value <<<
+
+# >>> load IMAQ config >>>
+import tomllib
+with open("imaq_config/auth.toml", "rb") as f:
+    AUTH = tomllib.load(f)
+# <<< load IMAQ config <<<
+
+# >>> SensorPush API connection >>>
 print("Authenticating to SensorPush...", end=" ")
-client = SensorPushClient(SP_EMAIL, SP_PASSWORD)
+client = SensorPushClient(**AUTH["sensorpush"])
 client.authenticate()
 print("Done.")
 print()
 # <<< SensorPush API connection <<<
 
-# >>> loop configuration >>>
-INTERVAL_s = 60
-EX_THRESHOLD = 3
-print(f"Polling interval = {INTERVAL_s} s, exception threshold = {EX_THRESHOLD}.")
-print()
-# <<< loop configuration <<<
-
-# check the input value
-# 1 query per minute is the maximum allowed for SensorPush API
-# https://www.sensorpush.com/gateway-cloud-api
-if INTERVAL_s < 60: raise ValueError("The loop interval (INTERVAL_s) should be at least 60 s.")
-
 # >>> InfluxDB configuration >>>
 import influxdb_client
 from influxdb_client.client.write_api import SYNCHRONOUS
-# Connection Settings
-INFLUXDB_URL = "http://synology-nas:8086"
-INFLUXDB_TOKEN = "xixuoRzjm51D2WQh5uHnqjd0H28NJuaKpiHAmmSzEUlqgUhxRl0A01Na6-a_gX6BENlP3xx8FEoGP-qMx0Xrow=="  # sinclairgroup_influxdb's admin token
-INFLUXDB_ORG = "sinclairgroup"     # The Organization name you set during initial setup
-INFLUXDB_BUCKET = "imaq"    # main bucket for IMAQ lab
 # Initialize the InfluxDB Client and the Write API
-INFLUXDB_CLIENT = influxdb_client.InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
+INFLUXDB_CLIENT = influxdb_client.InfluxDBClient(**AUTH["influxdb"])
 INFLUXDB_WRITE_API = INFLUXDB_CLIENT.write_api(write_options=SYNCHRONOUS)
 INFLUXDB_QUERY_API = INFLUXDB_CLIENT.query_api()
+INFLUXDB_ORG = AUTH["influxdb"]["org"]; INFLUXDB_BUCKET = AUTH["influxdb"]["bucket"]
 print(f"InfluxDB client initialized for org='{INFLUXDB_ORG}', bucket='{INFLUXDB_BUCKET}'.")
 print()
 # <<< InfluxDB configuration <<<

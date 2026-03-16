@@ -12,16 +12,22 @@ USAGE:
 import pytest
 import requests
 
+# >>> load IMAQ config >>>
+import tomllib
+with open("imaq_config/auth.toml", "rb") as f:
+    AUTH = tomllib.load(f)
+# <<< load IMAQ config <<<
+
 # --- Configuration ---
-SP_EMAIL = "sinclairquantumlab@gmail.com"
-SP_PASSWORD = "rubidium87"
-BASE_URL = "https://api.sensorpush.com/api/v1"
+SENSORPUSH_EMAIL = AUTH["sensorpush"]["email"]
+SENSORPUSH_PASSWORD = AUTH["sensorpush"]["password"]
+SENSORPUSH_URL = "https://api.sensorpush.com/api/v1"
 
 @pytest.fixture(scope="module")
 def auth_token():
     """Step 1: Get initial authorization token from email/password."""
-    payload = {"email": SP_EMAIL, "password": SP_PASSWORD}
-    res = requests.post(f"{BASE_URL}/oauth/authorize", json=payload, timeout=10)
+    payload = {"email": SENSORPUSH_EMAIL, "password": SENSORPUSH_PASSWORD}
+    res = requests.post(f"{SENSORPUSH_URL}/oauth/authorize", json=payload, timeout=10)
     
     assert res.status_code == 200, f"Auth step failed: {res.text}"
     token = res.json().get("authorization")
@@ -32,7 +38,7 @@ def auth_token():
 def access_token(auth_token):
     """Step 2: Exchange authorization token for an access token."""
     payload = {"authorization": auth_token}
-    res = requests.post(f"{BASE_URL}/oauth/accesstoken", json=payload, timeout=10)
+    res = requests.post(f"{SENSORPUSH_URL}/oauth/accesstoken", json=payload, timeout=10)
     
     assert res.status_code == 200, f"Access token exchange failed: {res.text}"
     token = res.json().get("accesstoken")
@@ -52,7 +58,7 @@ def test_sensor_list_retrieval(access_token):
         "Content-Type": "application/json"
     }
     # Using /devices/sensors as per your successful manual test
-    res = requests.post(f"{BASE_URL}/devices/sensors", headers=headers, json={}, timeout=10)
+    res = requests.post(f"{SENSORPUSH_URL}/devices/sensors", headers=headers, json={}, timeout=10)
     
     assert res.status_code == 200, f"Failed to fetch sensors: {res.text}"
     sensors = res.json()
@@ -67,7 +73,7 @@ def test_latest_sample_fetch(access_token):
         "Content-Type": "application/json"
     }
     payload = {"limit": 1}
-    res = requests.post(f"{BASE_URL}/samples", headers=headers, json=payload, timeout=15)
+    res = requests.post(f"{SENSORPUSH_URL}/samples", headers=headers, json=payload, timeout=15)
     
     assert res.status_code == 200, f"Failed to fetch samples: {res.text}"
     data = res.json()

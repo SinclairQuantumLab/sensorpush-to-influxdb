@@ -11,10 +11,16 @@ import requests
 import json
 import sys
 
+# >>> load IMAQ config >>>
+import tomllib
+with open("imaq_config/auth.toml", "rb") as f:
+    AUTH = tomllib.load(f)
+# <<< load IMAQ config <<<
+
 # --- Configuration ---
-SP_EMAIL = "sinclairquantumlab@gmail.com"
-SP_PASSWORD = "rubidium87"
-BASE_URL = "https://api.sensorpush.com/api/v1"
+SENSORPUSH_EMAIL = AUTH["sensorpush"]["email"]
+SENSORPUSH_PASSWORD = AUTH["sensorpush"]["password"]
+SENSORPUSH_URL = "https://api.sensorpush.com/api/v1"
 # ---------------------
 
 print("-" * 60)
@@ -22,14 +28,14 @@ print("Step 1: Authenticating with SensorPush Cloud...")
 
 # 1) Login: get temporary authorization token
 auth_res = requests.post(
-    f"{BASE_URL}/oauth/authorize",
+    f"{SENSORPUSH_URL}/oauth/authorize",
     headers={
         "accept": "application/json",
         "Content-Type": "application/json",
     },
     json={
-        "email": SP_EMAIL,
-        "password": SP_PASSWORD,
+        "email": SENSORPUSH_EMAIL,
+        "password": SENSORPUSH_PASSWORD,
     },
     timeout=10,
 )
@@ -45,7 +51,7 @@ print("\nStep 2: Exchanging authorization token for access token...")
 
 # 2) Exchange authorization token for access token
 access_res = requests.post(
-    f"{BASE_URL}/oauth/accesstoken",
+    f"{SENSORPUSH_URL}/oauth/accesstoken",
     headers={
         "accept": "application/json",
         "Content-Type": "application/json",
@@ -73,7 +79,7 @@ headers = {
 }
 
 sensors_res = requests.post(
-    f"{BASE_URL}/devices/sensors",
+    f"{SENSORPUSH_URL}/devices/sensors",
     headers=headers,
     json={},
     timeout=10,
@@ -93,7 +99,7 @@ print("\nStep 4: Fetching latest sample(s)...")
 
 # 4) Fetch latest samples
 samples_res = requests.post(
-    f"{BASE_URL}/samples",
+    f"{SENSORPUSH_URL}/samples",
     headers=headers,
     json={"limit": 1},
     timeout=15,

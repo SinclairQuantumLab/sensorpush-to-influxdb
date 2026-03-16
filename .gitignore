@@ -1,10 +1,9 @@
 # >>>>> for this app >>>>>
 
-config/*
-settings.toml
-
 # <<<<<< for this app <<<<<
 
+# IMAQ Lab config repo
+imaq_config/*
 
 # >>>>> Python.gitignore >>>>>
 # from https://github.com/github/gitignore/blob/main/Python.gitignore

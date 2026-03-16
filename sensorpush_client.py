@@ -12,8 +12,7 @@ This file can also be run directly for a quick connection test.
 from typing import Any
 import requests
 
-BASE_URL = "https://api.sensorpush.com/api/v1"
-
+SENSORPUSH_URL = "https://api.sensorpush.com/api/v1"
 
 class SensorPushClient:
     """
@@ -49,7 +48,7 @@ class SensorPushClient:
 
         # Step 1: get a temporary authorization token from account credentials
         auth_res = requests.post(
-            f"{BASE_URL}/oauth/authorize",
+            f"{SENSORPUSH_URL}/oauth/authorize",
             json={"email": self._email, "password": self._password},
             timeout=10,
         )
@@ -58,7 +57,7 @@ class SensorPushClient:
 
         # Step 2: exchange the temporary authorization token for an access token
         access_res = requests.post(
-            f"{BASE_URL}/oauth/accesstoken",
+            f"{SENSORPUSH_URL}/oauth/accesstoken",
             json={"authorization": authorization_token},
             timeout=10,
         )
@@ -123,7 +122,7 @@ class SensorPushClient:
         """
 
         response_json = requests.post(
-            f"{BASE_URL}/devices/sensors",
+            f"{SENSORPUSH_URL}/devices/sensors",
             headers=self._headers(),
             json={},
             timeout=timeout,
@@ -212,7 +211,7 @@ class SensorPushClient:
             payload["stopTime"] = stop_time
 
         response_json = requests.post(
-            f"{BASE_URL}/samples",
+            f"{SENSORPUSH_URL}/samples",
             headers=self._headers(),
             json=payload,
             timeout=timeout,
@@ -231,12 +230,8 @@ if __name__ == "__main__":
     # Simple step-by-step manual connection test for quick debugging.
     print("-" * 60)
     print("SensorPush connection test")
-    email = input("SensorPush email (if blank, sinclairquantumlab@gmail.com by default): ").strip()
-    if email == "":
-        email = "sinclairquantumlab@gmail.com"
-    password = getpass("SensorPush password: (if blank, use default)").strip()
-    if password == "":
-        password = "rubidium87"
+    email = input("SensorPush email: ").strip()
+    password = getpass("SensorPush password: ").strip()
 
     client = SensorPushClient(email, password)
 
