@@ -59,22 +59,34 @@ print()
 
 # >>> functions for unit conversion >>>
 def f_to_c(temp_f):
+    """Convert temperature from degF to degC."""
     return (temp_f - 32.0) * 5.0 / 9.0
 
 def inhg_to_hpa(pressure_inhg):
+    """Convert pressure from inHg to hPa."""
     return pressure_inhg * 33.8638866667
 # <<< functions for unit conversion <<<
 
 # >>> helper functions >>>
 do_debug = False
 def print_debug(*args, **kwargs):
+    """Print debug messages only when do_debug is enabled."""
     if do_debug is False: return
     print("[DEBUG] ", *args, **kwargs)
 
 def parse_utc_timestamp(ts: str) -> datetime:
+    """Parse a UTC timestamp string into a timezone-aware datetime."""
     return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(timezone.utc)
 
 def get_last_relayed_sample_datetimes() -> dict[str, datetime]:
+    """
+    Query InfluxDB for the latest relayed sample time of each sensor.
+
+    Returns:
+        dict[str, datetime]:
+            Mapping from sensor_id to the latest sample timestamp
+            already relayed to InfluxDB.
+    """
     flux = f'''
 from(bucket: "{INFLUXDB_BUCKET}")
   |> range(start: 0)
@@ -91,7 +103,6 @@ from(bucket: "{INFLUXDB_BUCKET}")
             observed = record.get_time()
             if sensor_id is None or observed is None:
                 continue
-            # last_relayed_sample_times[sensor_id] = observed.isoformat.replace("+00:00", "Z")
             last_relayed_sample_datetimes[sensor_id] = observed
 
     print_debug(f"last_relayed_sample_times count={len(last_relayed_sample_datetimes)}")
@@ -101,21 +112,37 @@ from(bucket: "{INFLUXDB_BUCKET}")
     return last_relayed_sample_datetimes
 
 def query_sensorpush() -> tuple[dict[str, any], dict[str, any]]:
+    """
+    Query SensorPush once for all sensors after a global start time.
+
+    Logic:
+    - Read the latest relayed sample time of each sensor from InfluxDB.
+    - Set the SensorPush query start time to the earliest of those
+      existing relayed timestamps.
+    - Query SensorPush once from that start time.
+    - Remove samples that were already relayed to InfluxDB.
+
+    Assumptions:
+    - All new sensors are connected to the gateway when deployed.
+    - No data already stored in InfluxDB will be lost.
+    - This app does not exclude particular sensors.
+    """
 
     # get the measured time of the last sample relayed to InfluxDB for each sensor
     last_relayed_sample_datetimes = get_last_relayed_sample_datetimes()
 
-    # get sensor information here because the querying sample data below takes a while and the sensor info might change meanwhile
+    # get sensor information here because the querying sample data below
+    # takes a while and the sensor info might change meanwhile
     sensors = client.get_sensors()
 
     # >>>>> query samples after the last one relayed to InfluxDB >>>>>
 
-    # set sensorpush query start time to be the earliest last measured time across the sensors (except the new sensors)
+    # set sensorpush query start time to be the earliest last measured time
+    # across the sensors that already exist in InfluxDB
+    # if there is no prior relayed sample at all, query from Unix epoch
     observed_existing = [observed for sensor_id, observed in last_relayed_sample_datetimes.items() if observed is not None]
-    # set Unix epoch to query_start_datetime if no sensorpush data exists in InfluxDB
-    datetime_epoch = datetime(1970, 1, 1, tzinfo=timezone.utc) 
-    query_start_datetime = min(observed_existing) if observed_existing else datetime_epoch
-    query_start_time_str= query_start_datetime.isoformat(timespec='milliseconds')
+    query_start_datetime = min(observed_existing) if observed_existing else datetime(1970, 1, 1, tzinfo=timezone.utc)
+    query_start_time_str = query_start_datetime.isoformat(timespec='milliseconds')
 
     # query samples from sensorpush
     samples = client.get_samples(
@@ -149,6 +176,13 @@ def upload_new_samples(
     sensors: dict[str, any],
     samples: dict[str, any],
 ) -> int:
+    """
+    Convert queried SensorPush samples into InfluxDB records and upload them.
+
+    Returns:
+        int:
+            Number of InfluxDB records prepared for upload.
+    """
 
     influxdb_records = []
 
@@ -214,19 +248,16 @@ def upload_new_samples(
     if not influxdb_records:
         print_debug("no records to write to InfluxDB")
         return 0
-
     for record in influxdb_records:
         print_debug(f"write_record sensor_id={record['tags']['sensor_id']} time={record['time']} sensor_name={repr(record['tags']['sensor_name'])}")
 
-    # INFLUXDB_WRITE_API.write(bucket=INFLUXDB_BUCKET, org=INFLUXDB_ORG, record=influxdb_records)
+    INFLUXDB_WRITE_API.write(bucket=INFLUXDB_BUCKET, org=INFLUXDB_ORG, record=influxdb_records)
     print_debug(f"INFLUXDB_WRITE_API.write completed for {len(influxdb_records)} record(s)")
-    log_warn("InfluxDB write is currently disabled for debugging.")
+    # log_warn("InfluxDB write is currently disabled for debugging.")
 
     # <<<<< upload to InfluxDB <<<<<
 
     return len(influxdb_records)
-    
-    
 # <<< helper functions <<<
 
 # Main loop for querying SensorPush samples and uploading to InfluxDB
@@ -252,7 +283,8 @@ while True:
             print_debug(f"finished query_samples() for iteration {il}")
 
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.HTTPError) as ex:
-            # re-connect to SensorPush and retry once. Intended for expired session rather than usual exception handling purpose.
+            # re-connect to SensorPush and retry once
+            # intended for expired session rather than usual exception handling purpose
             log_error(msg_il)
             log_error(f"SensorPush query failed: {type(ex).__name__}: {ex}")
             log_warn("Re-establishing SensorPush connection and retrying once...")
