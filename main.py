@@ -20,7 +20,9 @@ print()
 # >>> user app config >>>
 INTERVAL_s = 60
 EX_THRESHOLD = 3
+SENSORPUSH_LIMIT = 1000 # Maximum number of samples to request per sensor on each polling cycle.
 print(f"Polling interval = {INTERVAL_s} s, exception threshold = {EX_THRESHOLD}.")
+print(f"SensorPush samples limit per sensor = {SENSORPUSH_LIMIT}.")
 print()
 # <<< user app config <<<
 
@@ -36,6 +38,8 @@ print()
 # 1 query per minute is the maximum allowed for SensorPush API
 # https://www.sensorpush.com/gateway-cloud-api
 if INTERVAL_s < 60: raise ValueError("The loop interval (INTERVAL_s) should be at least 60 s.")
+if SENSORPUSH_LIMIT <= 0:
+    raise ValueError("SENSORPUSH_LIMIT should be a positive integer.")
 # <<< check the input value <<<
 
 # >>> load IMAQ config >>>
@@ -185,7 +189,7 @@ def query_sensorpush() -> tuple[dict[str, any], dict[str, any]]:
 
     samples = client.get_samples(
         start_time=query_start_time_str,
-        limit=1000,
+        limit=SENSORPUSH_LIMIT,
     )
 
     # remove the samples previously relayed
