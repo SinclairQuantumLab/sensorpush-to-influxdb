@@ -17,12 +17,20 @@ print()
 print("----- SensorPush -> InfluxDB uploader -----")
 print()
 
-# >>> app config >>>
+# >>> user app config >>>
 INTERVAL_s = 60
 EX_THRESHOLD = 3
 print(f"Polling interval = {INTERVAL_s} s, exception threshold = {EX_THRESHOLD}.")
 print()
-# <<< app config <<<
+# <<< user app config <<<
+
+# >>> internal constants >>>
+INFLUX_MEASUREMENT = "SensorPush"
+INFLUX_CURSOR_LOOKBACKS = ("-1d", "-10d", "0")
+print(f"Influx measurement = {INFLUX_MEASUREMENT}.")
+print(f"Influx cursor lookup windows = {', '.join(INFLUX_CURSOR_LOOKBACKS)} per sensor.")
+print()
+# <<< internal constants <<<
 
 # >>> check input values >>>
 # 1 query per minute is the maximum allowed for SensorPush API
@@ -48,6 +56,7 @@ print()
 import influxdb_client
 from influxdb_client.client.write_api import SYNCHRONOUS
 # Initialize the InfluxDB Client and the Write API
+AUTH["influxdb"]["url"] = "https://influxdb.sinclairnetwork.physics.wisc.edu"
 INFLUXDB_CLIENT = influxdb_client.InfluxDBClient(**AUTH["influxdb"])
 INFLUXDB_WRITE_API = INFLUXDB_CLIENT.write_api(write_options=SYNCHRONOUS)
 INFLUXDB_QUERY_API = INFLUXDB_CLIENT.query_api()
@@ -78,7 +87,36 @@ def parse_utc_timestamp(ts: str) -> datetime:
     """Parse a UTC timestamp string into a timezone-aware datetime."""
     return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(timezone.utc)
 
-def get_last_relayed_sample_datetimes() -> dict[str, datetime]:
+def build_last_relayed_sample_flux(sensor_id: str, range_start: str) -> str:
+    """Build a Flux query for the latest relayed sample time of one sensor."""
+    return f'''
+from(bucket: "{INFLUXDB_BUCKET}")
+  |> range(start: {range_start})
+  |> filter(fn: (r) => r["_measurement"] == "{INFLUX_MEASUREMENT}")
+  |> filter(fn: (r) => r["sensor_id"] == "{sensor_id}")
+  |> keep(columns: ["_time", "sensor_id"])
+  |> group(columns: ["sensor_id"])
+  |> max(column: "_time")
+  |> keep(columns: ["_time", "sensor_id"])
+'''
+
+def query_last_relayed_sample_datetime(sensor_id: str, range_start: str) -> datetime | None:
+    """Query InfluxDB for the latest relayed sample time of one sensor."""
+    flux = build_last_relayed_sample_flux(sensor_id=sensor_id, range_start=range_start)
+    tables = INFLUXDB_QUERY_API.query(query=flux, org=INFLUXDB_ORG)
+
+    observed_latest = None
+    for table in tables:
+        for record in table.records:
+            observed = record.get_time()
+            if observed is None:
+                continue
+            if observed_latest is None or observed > observed_latest:
+                observed_latest = observed
+
+    return observed_latest
+
+def get_last_relayed_sample_datetimes(sensor_ids: list[str]) -> dict[str, datetime]:
     """
     Query InfluxDB for the latest relayed sample time of each sensor.
 
@@ -87,22 +125,17 @@ def get_last_relayed_sample_datetimes() -> dict[str, datetime]:
             Mapping from sensor_id to the latest sample timestamp
             already relayed to InfluxDB.
     """
-    flux = f'''
-from(bucket: "{INFLUXDB_BUCKET}")
-  |> range(start: 0)
-  |> filter(fn: (r) => r["_measurement"] == "SensorPush")
-  |> group(columns: ["sensor_id"])
-  |> last(column: "_time")
-  |> keep(columns: ["_time", "sensor_id"])
-'''
     last_relayed_sample_datetimes = {}
-    tables = INFLUXDB_QUERY_API.query(query=flux, org=INFLUXDB_ORG)
-    for table in tables:
-        for record in table.records:
-            sensor_id = record.values.get("sensor_id")
-            observed = record.get_time()
-            if sensor_id is None or observed is None:
-                continue
+    for sensor_id in sensor_ids:
+        observed = None
+        for range_start in INFLUX_CURSOR_LOOKBACKS:
+            observed = query_last_relayed_sample_datetime(
+                sensor_id=sensor_id,
+                range_start=range_start,
+            )
+            if observed is not None:
+                break
+        if observed is not None:
             last_relayed_sample_datetimes[sensor_id] = observed
 
     print_debug(f"last_relayed_sample_times count={len(last_relayed_sample_datetimes)}")
@@ -116,10 +149,13 @@ def query_sensorpush() -> tuple[dict[str, any], dict[str, any]]:
     Query SensorPush once for all sensors after a global start time.
 
     Logic:
-    - Read the latest relayed sample time of each sensor from InfluxDB.
-    - Set the SensorPush query start time to the earliest of those
-      existing relayed timestamps.
-    - Query SensorPush once from that start time.
+    - Read the current sensor list from SensorPush.
+    - Read the latest relayed sample time of each sensor from InfluxDB,
+      widening the query range per sensor as needed.
+    - Set the SensorPush query start time to the earliest relayed sample
+      time across active sensors, or to Unix epoch if any active sensor
+      has no prior relayed sample.
+    - Query SensorPush once from that global start time.
     - Remove samples that were already relayed to InfluxDB.
 
     Assumptions:
@@ -128,44 +164,45 @@ def query_sensorpush() -> tuple[dict[str, any], dict[str, any]]:
     - This app does not exclude particular sensors.
     """
 
-    # get the measured time of the last sample relayed to InfluxDB for each sensor
-    last_relayed_sample_datetimes = get_last_relayed_sample_datetimes()
-
     # get sensor information here because the querying sample data below
     # takes a while and the sensor info might change meanwhile
     sensors = client.get_sensors()
+    sensor_ids = list(sensors.keys())
+
+    # get the measured time of the last sample relayed to InfluxDB for each sensor
+    last_relayed_sample_datetimes = get_last_relayed_sample_datetimes(sensor_ids)
 
     # >>>>> query samples after the last one relayed to InfluxDB >>>>>
+    # query from Unix epoch if any active sensor has no relayed data yet;
+    # otherwise query from the earliest relayed sample among active sensors
+    if len(last_relayed_sample_datetimes) < len(sensor_ids):
+        query_start_datetime = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    else:
+        observed_existing = [observed for observed in last_relayed_sample_datetimes.values() if observed is not None]
+        query_start_datetime = min(observed_existing) if observed_existing else datetime(1970, 1, 1, tzinfo=timezone.utc)
 
-    # set sensorpush query start time to be the earliest last measured time
-    # across the sensors that already exist in InfluxDB
-    # if there is no prior relayed sample at all, query from Unix epoch
-    observed_existing = [observed for sensor_id, observed in last_relayed_sample_datetimes.items() if observed is not None]
-    query_start_datetime = min(observed_existing) if observed_existing else datetime(1970, 1, 1, tzinfo=timezone.utc)
     query_start_time_str = query_start_datetime.isoformat(timespec='milliseconds')
 
-    # query samples from sensorpush
     samples = client.get_samples(
-                start_time=query_start_time_str,
-                limit=1000
-            )
-    
+        start_time=query_start_time_str,
+        limit=1000,
+    )
+
     # remove the samples previously relayed
     # also drop the records with no specified measured time (shouldn't happen though)
     for sensor_id, records in samples["sensors"].items():
         last_relayed_sample_datetime = last_relayed_sample_datetimes.get(sensor_id, None)
-        if last_relayed_sample_datetime is None:
-            continue
-
         records_filtered = []
         for record in records:
             measured_time_str = record.get("observed", None)
             if measured_time_str is None:
                 continue
             measured_datetime = datetime.fromisoformat(measured_time_str)
-            if measured_datetime <= last_relayed_sample_datetime:
+            if last_relayed_sample_datetime is not None and measured_datetime <= last_relayed_sample_datetime:
                 continue
             records_filtered += [record]
+
+        records_filtered.sort(key=lambda record: record["observed"])
         samples["sensors"][sensor_id] = records_filtered
 
     # <<<<< query samples after the last one relayed to InfluxDB <<<<<
@@ -198,7 +235,7 @@ def upload_new_samples(
         for record in records:
             measured_time = record["observed"]
             influxdb_record = {
-                "measurement": "SensorPush",
+                "measurement": INFLUX_MEASUREMENT,
                 "tags": {
                     "sensor_id": sensor_id,
                     "sensor_name": sensor_name,
