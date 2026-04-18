@@ -12,38 +12,30 @@ It is designed to:
 
 ## Requirements
 
-- Python 3.14
-- `uv`
+- [`uv`](https://docs.astral.sh/uv/getting-started/installation/) Python project manager
 - A SensorPush Cloud account
 - A SensorPush Gateway configured for cloud access
-- An InfluxDB server URL, organization, bucket, and token
-- Access to the private `imaq_config` repository used by this app
-
-This repository intentionally does not include the private configuration files
-it depends on. The app reads SensorPush and InfluxDB credentials from
-`imaq_config/auth.toml`.
+- Access to the private [`imaq_config`](https://github.com/SinclairQuantumLab/imaq_config) repository used by this app
 
 ## Installation & setup
 
-1. `git clone` this repo.
-2. `git clone` the private `imaq_config` repo into this repo's `imaq_config`
-   folder.
-3. Run `uv sync`.
-4. (Optional) To manage the main app with `supervisor`, adjust
+1. `git clone` this repo (recommended location: `~/Projects/`) and the private [`imaq_config`](https://github.com/SinclairQuantumLab/imaq_config.git) repo (in sinclairquantumlab@gmail.com GitHub account) into this repo's `imaq_config` folder for InfluxDB info:
+  
+    ```bash
+    cd ~/Projects/
+    git clone https://github.com/SinclairQuantumLab/sensorpush-to-influxdb.git
+    cd sensorpush-to-influxdb/
+    git clone https://github.com/SinclairQuantumLab/imaq_config.git
+    ```
+
+2. Run `uv sync`.
+3. (Optional) To manage the main app with `supervisor`, adjust
    `sensorpush-to-influxdb.conf` for your environment and move it into the
    `supervisor` `conf.d` folder.
 
 The local folder name should be `imaq_config`, and `imaq_config/auth.toml`
 should exist before running the scripts.
 
-If the private config repo is named differently on GitHub, clone it locally as
-`imaq_config`, for example:
-
-```bash
-git clone <private-config-repo-url> imaq_config
-```
-
-On Linux, no special `uv` handling is needed beyond the normal `uv sync`.
 
 > On Windows, if `uv` fails with cache, hardlink, or managed-Python errors,
 > run:
@@ -71,7 +63,7 @@ or with a virtual environment:
 python main.py
 ```
 
-The measurement period **`INTERVAL_s` is strongly recommended to be >= 60** because [SensorPush's policy on API call frequency](https://www.sensorpush.com/gateway-cloud-api): 1 call/min.
+The polling interval **`INTERVAL_s` is strongly recommended to be >= 60** because [SensorPush's policy on API call frequency](https://www.sensorpush.com/gateway-cloud-api): 1 call/min.
 
 ### Batch relay by specified time range
 
