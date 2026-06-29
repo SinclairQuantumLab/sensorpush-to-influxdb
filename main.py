@@ -11,6 +11,8 @@ from supervisor_helper import *
 import requests
 from sensorpush_client import SensorPushClient
 import time
+import signal
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 print()
@@ -21,6 +23,8 @@ print()
 INTERVAL_s = 60
 EX_THRESHOLD = 3
 SENSORPUSH_LIMIT = 1000 # Maximum number of samples to request per sensor on each polling cycle.
+ITERATION_TIMEOUT_s = 180 # Hard watchdog for one full polling iteration. Set <= 0 to disable.
+ITERATION_WATCHDOG_AVAILABLE = all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL", "setitimer"))
 print(f"Polling interval = {INTERVAL_s} s, exception threshold = {EX_THRESHOLD}.")
 print(f"SensorPush samples limit per sensor = {SENSORPUSH_LIMIT}.")
 print()
@@ -60,7 +64,7 @@ print()
 import influxdb_client
 from influxdb_client.client.write_api import SYNCHRONOUS
 # Initialize the InfluxDB Client and the Write API
-AUTH["influxdb"]["url"] = "https://influxdb.sinclairnetwork.physics.wisc.edu"
+# AUTH["influxdb"]["url"] = "https://influxdb.sinclairnetwork.physics.wisc.edu"
 INFLUXDB_CLIENT = influxdb_client.InfluxDBClient(**AUTH["influxdb"])
 INFLUXDB_WRITE_API = INFLUXDB_CLIENT.write_api(write_options=SYNCHRONOUS)
 INFLUXDB_QUERY_API = INFLUXDB_CLIENT.query_api()
@@ -86,6 +90,34 @@ def print_debug(*args, **kwargs):
     """Print debug messages only when do_debug is enabled."""
     if do_debug is False: return
     print("[DEBUG] ", *args, **kwargs)
+
+class IterationTimeoutError(TimeoutError):
+    """Raised when one polling loop exceeds ITERATION_TIMEOUT_s."""
+
+@contextmanager
+def iteration_watchdog(timeout_s: int):
+    """Raise if one polling iteration exceeds timeout_s on Unix-like systems."""
+    if timeout_s <= 0:
+        yield
+        return
+
+    if not ITERATION_WATCHDOG_AVAILABLE:
+        yield
+        return
+
+    def _handle_timeout(signum, frame):
+        raise IterationTimeoutError(f"Polling iteration exceeded {timeout_s} s.")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _handle_timeout)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, timeout_s)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
 
 def parse_utc_timestamp(ts: str) -> datetime:
     """Parse a UTC timestamp string into a timezone-aware datetime."""
@@ -309,49 +341,47 @@ print()
 
 il = 0  # iteration loop counter
 while True:
+    msg_il = f"Iteration {il}: "
     try:
-        # log_info(f"Iteration {il}:", end=" ")
-        msg_il = f"Iteration {il}: "
+        with iteration_watchdog(ITERATION_TIMEOUT_s):
+            # >>>>> querying samples >>>>>
+            try:
+                print_debug(f"starting query_samples() for iteration {il}")
 
-        # >>>>> querying samples >>>>>
-        # log_info("Polling SensorPush for latest samples...")
-        try:
-            print_debug(f"starting query_samples() for iteration {il}")
+                # fetch sensor list and sample data on every iteration
+                sensors, samples_per_sensor = query_sensorpush()
 
-            # fetch sensor list and sample data on every iteration
-            sensors, samples_per_sensor = query_sensorpush()
+                print_debug(f"finished query_samples() for iteration {il}")
 
-            print_debug(f"finished query_samples() for iteration {il}")
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.HTTPError) as ex:
+                # re-connect to SensorPush and retry once
+                # intended for expired session rather than usual exception handling purpose
+                log_error(msg_il)
+                log_error(f"SensorPush query failed: {type(ex).__name__}: {ex}")
+                log_warn("Re-establishing SensorPush connection and retrying once...")
+                client.authenticate()
+                log_warn("SensorPush re-authentication succeeded.")
 
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.HTTPError) as ex:
-            # re-connect to SensorPush and retry once
-            # intended for expired session rather than usual exception handling purpose
-            log_error(msg_il)
-            log_error(f"SensorPush query failed: {type(ex).__name__}: {ex}")
-            log_warn("Re-establishing SensorPush connection and retrying once...")
-            client.authenticate()
-            log_warn("SensorPush re-authentication succeeded.")
+                print_debug(f"retrying query_samples() for iteration {il}")
 
-            print_debug(f"retrying query_samples() for iteration {il}")
+                # retry fetching after re-authentication
+                sensors, samples_per_sensor = query_sensorpush()
 
-            # retry fetching after re-authentication
-            sensors, samples_per_sensor = query_sensorpush()
-
-            print_debug(f"retry query_samples() succeeded for iteration {il}")
-        # <<<<< querying samples <<<<<
+                print_debug(f"retry query_samples() succeeded for iteration {il}")
+            # <<<<< querying samples <<<<<
 
 
-        # >>>>> uploading samples to InfluxDB >>>>>
+            # >>>>> uploading samples to InfluxDB >>>>>
 
-        uploaded_count = upload_new_samples(sensors, samples_per_sensor)
+            uploaded_count = upload_new_samples(sensors, samples_per_sensor)
 
-        # if there is no records to upload:
-        if uploaded_count == 0:
-            log(msg_il + "No new SensorPush samples to upload.")
-        else:
-            log(msg_il + f"Uploaded {uploaded_count} influxdb_record(s).")
+            # if there is no records to upload:
+            if uploaded_count == 0:
+                log(msg_il + "No new SensorPush samples to upload.")
+            else:
+                log(msg_il + f"Uploaded {uploaded_count} influxdb_record(s).")
 
-        # <<<<< uploading samples to InfluxDB <<<<<
+            # <<<<< uploading samples to InfluxDB <<<<<
 
     except Exception as ex:
         log_error(msg_il)
@@ -361,6 +391,7 @@ while True:
         if ex_count >= EX_THRESHOLD:
             log_error("Exception threshold reached. Raising to supervisor.")
             raise
+        log_warn(f"Continuing after exception; sleeping {INTERVAL_s} s before next attempt.")
 
     # log_info(f"Sleeping for {INTERVAL} s.")
     time.sleep(INTERVAL_s)
