@@ -20,10 +20,11 @@ print("----- SensorPush -> InfluxDB uploader -----")
 print()
 
 # >>> user app config >>>
-INTERVAL_s = 60
+INTERVAL_s = 90
 EX_THRESHOLD = 3
 SENSORPUSH_LIMIT = 1000 # Maximum number of samples to request per sensor on each polling cycle.
 ITERATION_TIMEOUT_s = 180 # Hard watchdog for one full polling iteration. Set <= 0 to disable.
+STARTUP_FAILURE_DELAY_s = 180 # Delay before supervisor restarts after SensorPush authentication failure.
 ITERATION_WATCHDOG_AVAILABLE = all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL", "setitimer"))
 print(f"Polling interval = {INTERVAL_s} s, exception threshold = {EX_THRESHOLD}.")
 print(f"SensorPush samples limit per sensor = {SENSORPUSH_LIMIT}.")
@@ -55,7 +56,14 @@ with open("imaq_config/auth.toml", "rb") as f:
 # >>> SensorPush API connection >>>
 print("Authenticating to SensorPush...", end=" ")
 client = SensorPushClient(**AUTH["sensorpush"])
-client.authenticate()
+try:
+    client.authenticate()
+except requests.exceptions.RequestException as ex:
+    print("Failed.")
+    log_error(f"SensorPush authentication failed: {type(ex).__name__}: {ex}")
+    log_warn(f"Exiting in {STARTUP_FAILURE_DELAY_s} s so supervisor can restart the app.")
+    time.sleep(STARTUP_FAILURE_DELAY_s)
+    raise
 print("Done.")
 print()
 # <<< SensorPush API connection <<<
