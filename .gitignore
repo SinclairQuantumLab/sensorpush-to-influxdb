@@ -2,8 +2,8 @@
 
 # <<<<<< for this app <<<<<
 
-# IMAQ Lab config repo
-imaq_config/*
+# IMAQ Lab secret repo
+imaq-secret/*
 
 # >>>>> Python.gitignore >>>>>
 # from https://github.com/github/gitignore/blob/main/Python.gitignore

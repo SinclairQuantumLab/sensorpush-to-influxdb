@@ -47,11 +47,11 @@ if SENSORPUSH_LIMIT <= 0:
     raise ValueError("SENSORPUSH_LIMIT should be a positive integer.")
 # <<< check the input value <<<
 
-# >>> load IMAQ config >>>
+# >>> load IMAQ secret >>>
 import tomllib
-with open("imaq_config/auth.toml", "rb") as f:
+with open("imaq-secret/auth.toml", "rb") as f:
     AUTH = tomllib.load(f)
-# <<< load IMAQ config <<<
+# <<< load IMAQ secret <<<
 
 # >>> SensorPush API connection >>>
 print("Authenticating to SensorPush...", end=" ")

@@ -19,19 +19,19 @@ It is designed to:
 
 ## Installation & setup
 
-1. `git clone` this repo (recommended location: `~/Projects/`) and the private [`imaq_config`](https://github.com/SinclairQuantumLab/imaq_config.git) repo (in sinclairquantumlab@gmail.com GitHub account) into this repo's `imaq_config` folder for InfluxDB info:
+1. `git clone` this repo to `~/Projects/`:
   
     ```bash
     cd ~/Projects/
-    git clone https://github.com/SinclairQuantumLab/sensorpush-to-influxdb.git
-    cd sensorpush-to-influxdb/
-    git clone https://github.com/SinclairQuantumLab/imaq_config.git
+    git clone --recurse-submodules https://github.com/SinclairQuantumLab/sensorpush-to-influxdb.git 
     ```
 
+    > **NOTE**: the `--recurse-submodules` option clones [`imaq-secret`](https://github.com/SinclairQuantumLab/imaq-secret.git) repo for the credential to access to our InfluxDB together at the right location in this repo.
+
 2. Run `uv sync`.
-3. (Optional) To manage the main app with `supervisor`, adjust
+3. (Optional) To manage the main app with the local `supervisor`, adjust
    `sensorpush-to-influxdb.conf` for your environment and move it into the
-   `supervisor` `conf.d` folder.
+   `supervisor`'s `conf.d` folder.
 
 The local folder name should be `imaq_config`, and `imaq_config/auth.toml`
 should exist before running the scripts.
