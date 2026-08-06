@@ -7,7 +7,7 @@ raises after a configured number of total exceptions so supervisor can
 handle process-level recovery.
 """
 
-from supervisor_helper import *
+from supervisor.supervisor_helper import *
 import requests
 from sensorpush_client import SensorPushClient
 import time
