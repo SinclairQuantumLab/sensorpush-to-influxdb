@@ -1,4 +1,4 @@
-#!/bin/bash -i
+#!/usr/bin/env bash
 # bash script to run the specified python scirpt,
 # independent of the PWD this bash script is run from.
 
